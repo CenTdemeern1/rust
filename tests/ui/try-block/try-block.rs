@@ -72,4 +72,8 @@ pub fn main() {
 
     let my_opt: Option<_> = try { };
     assert_eq!(my_opt, Some(()));
+
+    None = try {
+        return;
+    };
 }

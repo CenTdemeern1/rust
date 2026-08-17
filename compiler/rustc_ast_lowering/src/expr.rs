@@ -662,47 +662,36 @@ impl<'hir> LoweringContext<'_, 'hir> {
     /// `try { <stmts>; }` into `{ <stmts>; ::std::ops::Try::from_output(()) }`
     /// and save the block id to use it as a break target for desugaring of the `?` operator.
     fn lower_expr_try_block(&mut self, body: &Block, opt_ty: Option<&Ty>) -> hir::ExprKind<'hir> {
-        let body_hir_id = self.lower_node_id(body.id);
+        let outer_block_hir_id = self.lower_node_id(body.id);
         let new_scope = if opt_ty.is_some() {
-            TryBlockScope::Heterogeneous(body_hir_id)
+            TryBlockScope::Heterogeneous(outer_block_hir_id)
         } else {
-            TryBlockScope::Homogeneous(body_hir_id)
+            TryBlockScope::Homogeneous(outer_block_hir_id)
         };
         let whole_block = self.with_try_block_scope(new_scope, |this| {
-            let mut block = this.lower_block_noalloc(body_hir_id, body, true);
-
-            // Final expression of the block (if present) or `()` with span at the end of block
-            let (try_span, tail_expr) = if let Some(expr) = block.expr.take() {
-                (
-                    this.mark_span_with_reason(
-                        DesugaringKind::TryBlock,
-                        expr.span,
-                        Some(Arc::clone(&this.allow_try_trait)),
-                    ),
-                    expr,
-                )
-            } else {
-                let try_span = this.mark_span_with_reason(
-                    DesugaringKind::TryBlock,
-                    this.tcx.sess.source_map().end_point(body.span),
-                    Some(Arc::clone(&this.allow_try_trait)),
-                );
-
-                (try_span, this.expr_unit(try_span))
-            };
-
-            let ok_wrapped_span =
-                this.mark_span_with_reason(DesugaringKind::TryBlock, tail_expr.span, None);
-
-            // `::std::ops::Try::from_output($tail_expr)`
-            block.expr = Some(this.wrap_in_try_constructor(
+            let lowered_body = this.lower_block(body, false);
+            let body_expr = this.arena.alloc(this.expr_block(&lowered_body));
+            let from_output_call_span = this.mark_span_with_reason(
+                DesugaringKind::TryBlock,
+                body.span,
+                Some(Arc::clone(&this.allow_try_trait)),
+            );
+            let overall_span =
+                this.mark_span_with_reason(DesugaringKind::TryBlock, from_output_call_span, None);
+            let try_wrapped_body = this.wrap_in_try_constructor(
                 LangItem::TryTraitFromOutput,
-                try_span,
-                tail_expr,
-                ok_wrapped_span,
-            ));
-
-            this.arena.alloc(block)
+                from_output_call_span,
+                body_expr,
+                overall_span,
+            );
+            this.arena.alloc(hir::Block {
+                stmts: &[],
+                expr: Some(try_wrapped_body),
+                hir_id: outer_block_hir_id,
+                rules: hir::BlockCheckMode::DefaultBlock,
+                span: overall_span,
+                targeted_by_break: true,
+            })
         });
 
         if let Some(ty) = opt_ty {
